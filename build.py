@@ -177,6 +177,15 @@ def gitclone(cwd, repo, tag, subdir):
         fail_if(p.returncode != 0,
                 'git clone of repo "{}" at tag "{}" failed'.format(repo, tag))
 
+        if os.path.isfile('./patches/{}.patch'.format(repo)):
+            log_verbose('git apply patch to repo "{}"'.format(repo))
+            p = subprocess.Popen(
+                ['git', 'apply', '{}/patches/{}.patch'.format(os.getcwd(), repo)],
+                cwd='{}/{}'.format(cwd, subdir) 
+            )
+            p.wait()
+            fail_if(p.returncode != 0,
+                    'git apply patch to repo "{}" failed'.format(repo))
 
 def prebuild_command():
     p = subprocess.Popen(FLAGS.container_prebuild_command.split())
@@ -213,6 +222,13 @@ def makeinstall(cwd, target='install'):
 
     p.wait()
     fail_if(p.returncode != 0, 'make {} failed'.format(target))
+
+
+def cpack(cwd):
+    p = subprocess.Popen(
+        ['cpack', '--config', 'CPackConfig.cmake'],
+        cwd=cwd)
+    p.wait()
 
 
 def cmake_enable(flag):
@@ -380,6 +396,7 @@ def pytorch_cmake_args(images):
 
 def onnxruntime_cmake_args(images, library_paths):
     cargs = [
+        '-DTRITON_TARGET_PLATFORM={}'.format(target_platform()),
         '-DTRITON_ENABLE_ONNXRUNTIME_TENSORRT=ON',
         '-DTRITON_BUILD_ONNXRUNTIME_VERSION={}'.format(
             TRITON_VERSION_MAP[FLAGS.version][2])
@@ -407,11 +424,15 @@ def onnxruntime_cmake_args(images, library_paths):
                 cargs.append('-DTRITON_BUILD_CONTAINER_VERSION={}'.format(
                     TRITON_VERSION_MAP[FLAGS.version][1]))
 
-            if TRITON_VERSION_MAP[FLAGS.version][3] is not None:
+            if TRITON_VERSION_MAP[FLAGS.version][3] is not None and target_platform() == 'ubuntu':
                 cargs.append('-DTRITON_ENABLE_ONNXRUNTIME_OPENVINO=ON')
                 cargs.append(
                     '-DTRITON_BUILD_ONNXRUNTIME_OPENVINO_VERSION={}'.format(
                         TRITON_VERSION_MAP[FLAGS.version][3]))
+            if target_platform() == 'suse':
+                cargs.append('-DTRITON_BUILD_CUDA_HOME=/usr/local/cuda')
+                cargs.append('-DTRITON_BUILD_CUDNN_HOME=/usr/local/cuda')
+                cargs.append('-DTRITON_BUILD_TENSORRT_HOME=/usr/local')
 
     return cargs
 
@@ -520,7 +541,7 @@ ARG TRITON_CONTAINER_VERSION
         df += '''
 SHELL ["cmd", "/S", "/C"]
 '''
-    else:
+    elif target_platform() == 'ubuntu':
         df += '''
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
@@ -584,6 +605,7 @@ RUN rm -fr *
 COPY . .
 ENTRYPOINT []
 '''
+    if target_platform() == 'ubuntu':
         df += install_dcgm_libraries()
         df += '''
 RUN patch -ruN -d /usr/include/ < /workspace/build/libdcgm/dcgm_api_export.patch
@@ -835,6 +857,8 @@ def container_build(images, backends, repoagents, endpoints):
         base_image = images['base']
     elif target_platform() == 'windows':
         base_image = 'mcr.microsoft.com/dotnet/framework/sdk:4.8'
+    elif target_platform() == 'suse':
+        base_image = 'registry.gitlab.com/vay/research-and-development/libraries/tritonsharp/tritonserver_base:leap-15.2'
     else:
         base_image = 'nvcr.io/nvidia/tritonserver:{}-py3-min'.format(
             FLAGS.upstream_container_version)
@@ -1041,7 +1065,7 @@ if __name__ == '__main__':
         required=False,
         default=None,
         help=
-        'Target for build, can be "ubuntu", "windows" or "jetpack". If not specified, build targets the current platform.'
+        'Target for build, can be "ubuntu", "suse", "windows" or "jetpack". If not specified, build targets the current platform.'
     )
 
     parser.add_argument('--build-id',
@@ -1232,6 +1256,10 @@ if __name__ == '__main__':
         if FLAGS.cmake_dir is None:
             fail('--cmake-dir required for Triton core build')
 
+    # Hack to make sure working directory is parent of this file.
+    # Otherwise relative paths such as right below can't be found.
+    os.chdir(os.path.dirname(sys.argv[0]))
+
     # Determine the versions. Start with Triton version, if --version
     # is not explicitly specified read from TRITON_VERSION file.
     if FLAGS.version is None:
@@ -1262,6 +1290,9 @@ if __name__ == '__main__':
         # Determine the default <repo-tag> based on container version.
         if not FLAGS.container_version.endswith('dev'):
             default_repo_tag = 'r' + FLAGS.container_version
+    
+    if (FLAGS.container_version.startswith('r')):
+        default_repo_tag = FLAGS.container_version
 
     # Initialize map of backends to build and repo-tag for each.
     backends = {}
@@ -1349,11 +1380,13 @@ if __name__ == '__main__':
         repo_build_dir = os.path.join(FLAGS.build_dir, 'tritonserver', 'build')
         repo_install_dir = os.path.join(FLAGS.build_dir, 'tritonserver',
                                         'install')
+        server_build_dir = os.path.join(repo_build_dir, 'server')
 
         mkdir(repo_build_dir)
         cmake(repo_build_dir,
               core_cmake_args(components, backends, repo_install_dir))
         makeinstall(repo_build_dir, target='server')
+        cpack(server_build_dir)
 
         core_install_dir = FLAGS.install_dir
         mkdir(core_install_dir)

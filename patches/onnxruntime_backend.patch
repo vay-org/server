@@ -1,0 +1,138 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a0d3e20..5069b57 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -87,6 +87,8 @@ set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server
+ set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
+ set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
+ 
++set(TRITON_TARGET_PLATFORM "" CACHE STRING "Platform to build triton for. Can be 'windows', 'jetpack', 'ubuntu', 'suse'.")
++
+ if (WIN32)
+   if(TRITON_ENABLE_ONNXRUNTIME_OPENVINO)
+     message(FATAL_ERROR
+@@ -291,14 +293,19 @@ endif() # TRITON_ENABLE_ONNXRUNTIME_OPENVINO
+ # Build the ONNX Runtime libraries using docker.
+ #
+ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
+-  set(_GEN_FLAGS "")
++  # Always enable GPU, if no GPU is available ORT will just fall back to CPU.
++  set(_GEN_FLAGS "--enable-gpu")
+   if(${TRITON_BUILD_CUDA_VERSION})
+     set(_GEN_FLAGS ${_GEN_FLAGS} "--cuda-version=${TRITON_BUILD_CUDA_VERSION}")
+   endif() # TRITON_BUILD_CUDA_VERSION
+-  if(${TRITON_BUILD_CUDA_HOME})
++  if(NOT ${TRITON_BUILD_CUDA_HOME} STREQUAL "")
+     set(_GEN_FLAGS ${_GEN_FLAGS} "--cuda-home=${TRITON_BUILD_CUDA_HOME}")
+   endif() # TRITON_BUILD_CUDA_HOME
+-  if(${TRITON_BUILD_TENSORRT_HOME})
++  if(NOT ${TRITON_BUILD_CUDNN_HOME} STREQUAL "")
++    set(_GEN_FLAGS ${_GEN_FLAGS} "--cudnn-home=${TRITON_BUILD_CUDNN_HOME}")
++  endif() # TRITON_BUILD_CUDNN_HOME
++  if(NOT ${TRITON_BUILD_TENSORRT_HOME} STREQUAL "")
++    message(WARNING "TensorRT HOME set to ${TRITON_BUILD_TENSORRT_HOME}")
+     set(_GEN_FLAGS ${_GEN_FLAGS} "--tensorrt-home=${TRITON_BUILD_TENSORRT_HOME}")
+   endif() # TRITON_BUILD_TENSORRT_HOME
+   if(${TRITON_ENABLE_ONNXRUNTIME_TENSORRT})
+@@ -325,7 +332,7 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
+     add_custom_command(
+       OUTPUT
+         onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
+-      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" ${_GEN_FLAGS} --output=Dockerfile.ort
++      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py --target-platform="${TRITON_TARGET_PLATFORM}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" ${_GEN_FLAGS} --output=Dockerfile.ort
+       COMMAND docker build --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${CMAKE_CURRENT_SOURCE_DIR}
+       COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
+       COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+diff --git a/tools/gen_ort_dockerfile.py b/tools/gen_ort_dockerfile.py
+index 33d5bec..8c2e9e4 100755
+--- a/tools/gen_ort_dockerfile.py
++++ b/tools/gen_ort_dockerfile.py
+@@ -58,9 +58,8 @@ WORKDIR /workspace
+     return df
+ 
+ 
+-def dockerfile_for_linux(output_file):
+-    df = dockerfile_common()
+-    df += '''
++def dependencies_for_ubuntu():
++    return '''
+ # Ensure apt-get won't prompt for selecting options
+ ENV DEBIAN_FRONTEND=noninteractive
+ 
+@@ -83,6 +82,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
+         patchelf \
+         python3-dev \
+         python3-pip
++
++    '''
++
++# These shouldn't be necessary because the base image already contains all
++# dependencies.
++def dependencies_for_suse():
++    return ''
++
++
++def dockerfile_for_linux(output_file):
++    df = dockerfile_common()
++    if target_platform() == 'suse':
++        df += dependencies_for_suse()
++    else:
++        df += dependencies_for_ubuntu()
++    df += '''
+ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-4.5.11-Linux-x86_64.sh \
+          -O ~/miniconda.sh --no-check-certificate && \
+     /bin/bash ~/miniconda.sh -b -p /opt/miniconda && \
+@@ -138,17 +153,19 @@ RUN git clone -b rel-${ONNXRUNTIME_VERSION} --recursive ${ONNXRUNTIME_REPO} onnx
+ 
+ '''
+ 
+-    ep_flags = '--use_cuda'
+-    if FLAGS.cuda_version is not None:
+-        ep_flags += ' --cuda_version "{}"'.format(FLAGS.cuda_version)
+-    if FLAGS.cuda_home is not None:
+-        ep_flags += ' --cuda_home "{}"'.format(FLAGS.cuda_home)
+-    if FLAGS.cudnn_home is not None:
+-        ep_flags += ' --cudnn_home "{}"'.format(FLAGS.cudnn_home)
+-    if FLAGS.ort_tensorrt:
+-        ep_flags += ' --use_tensorrt'
+-        if FLAGS.tensorrt_home is not None:
+-            ep_flags += ' --tensorrt_home "{}"'.format(FLAGS.tensorrt_home)
++    ep_flags = ''
++    if FLAGS.enable_gpu:
++        ep_flags += '--use_cuda'
++        if FLAGS.cuda_version is not None:
++            ep_flags += ' --cuda_version "{}"'.format(FLAGS.cuda_version)
++        if FLAGS.cuda_home is not None:
++            ep_flags += ' --cuda_home "{}"'.format(FLAGS.cuda_home)
++        if FLAGS.cudnn_home is not None:
++            ep_flags += ' --cudnn_home "{}"'.format(FLAGS.cudnn_home)
++        if FLAGS.ort_tensorrt:
++            ep_flags += ' --use_tensorrt'
++            if FLAGS.tensorrt_home is not None:
++                ep_flags += ' --tensorrt_home "{}"'.format(FLAGS.tensorrt_home)
+     if FLAGS.ort_openvino is not None:
+         ep_flags += ' --use_openvino CPU_FP32'
+ 
+@@ -257,7 +274,6 @@ RUN mkdir -p /opt/onnxruntime/test && \
+     with open(output_file, "w") as dfile:
+         dfile.write(df)
+ 
+-
+ def dockerfile_for_windows(output_file):
+     df = dockerfile_common()
+     df += '''
+@@ -357,9 +373,13 @@ if __name__ == '__main__':
+         required=False,
+         default=None,
+         help=
+-        'Target for build, can be "ubuntu", "windows" or "jetpack". If not specified, build targets the current platform.'
++        'Target for build, can be "ubuntu", "suse", "windows" or "jetpack". If not specified, build targets the current platform.'
+     )
+ 
++    parser.add_argument('--enable-gpu',
++                        action="store_true",
++                        required=False,
++                        help='Enable GPU acceleration.')
+     parser.add_argument('--cuda-version',
+                         type=str,
+                         required=False,

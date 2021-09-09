@@ -250,3 +250,21 @@ add_subdirectory(../../src/backends/pytorch src/backends/pytorch)
 add_subdirectory(../../src/backends/tensorflow src/backends/tensorflow)
 add_subdirectory(../../src/backends/tensorrt src/backends/tensorrt)
 add_subdirectory(../../src/servers src/servers)
+
+file(READ ../../TRITON_VERSION TRITON_VERSION)
+string(STRIP ${TRITON_VERSION} TRITON_VERSION)
+
+#
+# CPack settings
+#
+set(CPACK_GENERATOR "RPM")
+string(STRIP "${CMAKE_SYSTEM_PROCESSOR}" CPACK_RPM_PACKAGE_ARCHITECTURE)
+set(CPACK_PACKAGE_NAME "Triton Inference Server")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "NVIDIA Triton inference server binaries and utilities.")
+set(CPACK_PACKAGE_DESCRIPTION "Native binaries for NVIDIA Triton and its components.")
+set(CPACK_PACKAGE_VENDOR "NVIDIA CORPORATION")
+set(CPACK_PACKAGE_VERSION "${TRITON_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}_${CPACK_PACKAGE_VERSION}_${CPACK_RPM_PACKAGE_ARCHITECTURE}")
+set(CPACK_RPM_PACKAGE_LICENSE "BSD3")
+set(CPACK_RPM_PACKAGE_URL "https://github.com/triton-inference-server/server")
+include(CPack)
